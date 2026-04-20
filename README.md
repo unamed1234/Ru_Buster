@@ -1,7 +1,15 @@
 # Ru_Buster
-basic web directory brute forcer written 100% in rust 
-## why?
-yes (no you should probably stick to gobuster) .
-## faster?
-barely when single threaded. trough my testing this is about 1-0.3 seconds faster than single threaded gobuster on a 4750 line wordlist attacking a nginx container in localhost (very biased test) 
-but if you allow threading, gobuster wins massively. Due to threading not being implemented in this version yet. You shouldn't really use this unless you have a very specific need for it
+web directory brute forcer written 100% in rust 
+# threading 
+now supports threading using tokio runtime and is very fast 
+# usage
+it supports headers trough -H flag in Header: value format, and any method trough the -m  flag 
+run without args for usage 
+usage is: {} --url example.com -w wordlist.txt -m POST -H Authorization: 123sjdoajdoa102skda
+flags:);
+-H or --header for custom header in \Header: Value\ format
+-m or --method for any http method (default is get )
+-u or --url the url to target server (only HTTP is supported at this time)
+-w or --wordlist path to your wordlist
+# fastest?
+maybe? I've only tested against gobuster its not as mature as gobuster but has very fast threading which from my tests is way faster than gobuster, have fun!
