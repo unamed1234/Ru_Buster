@@ -1,3 +1,4 @@
+use rustls_pki_types::ServerName;
 use std::env;
 use std::fs::File;
 use std::io::BufRead as stdBufRead;
@@ -6,6 +7,9 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::task;
+use tokio_rustls::TlsConnector;
+use tokio_rustls::client::TlsStream;
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 #[tokio::main]
 
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,11 +27,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("-w or --wordlist path to your wordlist");
         return Ok(());
     }
-    let filename = Arc::new(wordlist.clone());
+    let filename: Arc<str> = Arc::from(wordlist.as_str());
     let met = Arc::new(method);
     let head = Arc::new(header);
-    let dom = Arc::new(format!("{domain}:80"));
-    let reader = stdBufReader::new(File::open(wordlist)?);
+    let rightdom = if domain.starts_with("https://") {
+        Arc::new(format!("{}:443", domain.strip_prefix("https://").unwrap()))
+    } else if domain.starts_with("http://") {
+        Arc::new(format!("{}:80", domain.strip_prefix("http://").unwrap()))
+    } else {
+        Err("make sure your domain starts with a protocol (https:// or http://)")?
+    };
+    let dom = Arc::new(domain);
+    let reader = stdBufReader::new(File::open(&wordlist)?);
     let num_of_lines = reader.lines().count();
     let chunk = num_of_lines / thread_num;
     let remainder = num_of_lines % thread_num;
@@ -37,41 +48,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let met_clone = Arc::clone(&met);
         let header_clone = Arc::clone(&head);
         let domain_clone = Arc::clone(&dom);
-        if remainder == 0 {
+        // let http_domain_clone = Arc::clone(&http_dom);
+        let right_domain_clone = Arc::clone(&rightdom);
+        // let https_domain_clone = Arc::clone(&http_dom);
+        if domain_clone.starts_with("http://") {
             handles.push(task::spawn(async move {
-                let line_start = chunk * i + 1;
-                let read = stdBufReader::new(File::open(file_clone.to_string()).unwrap());
-                let stream = TcpStream::connect(domain_clone.as_ref()).await.unwrap();
-                let mut lines = read.lines();
-                lines.nth(line_start);
-                brute_forcer(
-                    chunk,
-                    &domain_clone,
-                    file_clone,
-                    stream,
-                    &header_clone,
-                    &met_clone,
-                    line_start,
-                )
-                .await
-                .unwrap()
-            }));
-        } else {
-            handles.push(task::spawn(async move {
-                let line_start = if thread_num == i {
-                    chunk % i + 1
-                } else if i == 0 {
-                    chunk
+                let line_start = chunk * i;
+                let thread_chunk = if i == thread_num - 1 {
+                    chunk + remainder
                 } else {
-                    chunk * i + 1
+                    chunk
                 };
-                let read = stdBufReader::new(File::open(file_clone.to_string()).unwrap());
-                let stream = TcpStream::connect(domain_clone.as_ref()).await.unwrap();
-                let mut lines = read.lines();
-                lines.nth(line_start);
-                brute_forcer(
-                    chunk,
-                    &domain_clone,
+                let stream = TcpStream::connect(right_domain_clone.as_ref())
+                    .await
+                    .unwrap();
+                http_brute_forcer(
+                    thread_chunk,
+                    &right_domain_clone,
                     file_clone,
                     stream,
                     &header_clone,
@@ -81,36 +74,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .unwrap()
             }))
-        };
+        } else if domain_clone.starts_with("https://") {
+            handles.push(task::spawn(async move {
+                let line_start = chunk * i;
+                let thread_chunk = if i == thread_num - 1 {
+                    chunk + remainder
+                } else {
+                    chunk
+                };
+                https_brute_forcer(
+                    thread_chunk,
+                    &right_domain_clone,
+                    file_clone,
+                    &header_clone,
+                    &met_clone,
+                    line_start,
+                )
+                .await
+                .unwrap()
+            }))
+        }
     }
     for h in handles {
         h.await?;
     }
     Ok(())
 }
-async fn brute_forcer(
+async fn http_brute_forcer(
     max: usize,
-    domain_clone: &str,
-    file_clone: Arc<String>,
+    domain: &str,
+    file_clone: Arc<str>,
     mut stream: TcpStream,
     header_clone: &str,
     met_clone: &str,
     line_start: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let read = stdBufReader::new(File::open(file_clone.to_string()).unwrap());
+    let read = stdBufReader::new(File::open(&*file_clone).unwrap());
     let mut lines = read.lines();
-    lines.nth(line_start);
-    let mut times = 0;
+    if line_start > 0 {
+        lines.nth(line_start - 1);
+    }
     for (iterations, line) in lines.enumerate() {
         if iterations >= max {
             break;
         }
-        if line.as_ref().unwrap() == "index.html" {
-            times += 1;
-            println!("got index.html {}", times);
-        }
         let mut body = http_request(
-            domain_clone,
+            domain,
             line.as_ref().unwrap_or(&String::from("")),
             &mut stream,
             header_clone,
@@ -119,9 +128,9 @@ async fn brute_forcer(
         .await
         .unwrap_or_default();
         if !body.starts_with("HTTP") {
-            stream = TcpStream::connect(&domain_clone).await.unwrap();
+            stream = TcpStream::connect(&domain).await?;
             body = http_request(
-                domain_clone,
+                domain,
                 line.as_ref().unwrap_or(&String::from("")),
                 &mut stream,
                 header_clone,
@@ -133,6 +142,8 @@ async fn brute_forcer(
         let status = body.split(" ").nth(1).unwrap_or_default();
         if status != "404" {
             println!("found something! dir:{} status: {}", line.unwrap(), status);
+            // fix next request being body to this one since we're reusing stream
+            stream = TcpStream::connect(&domain).await?;
         }
     }
     Ok(())
@@ -162,6 +173,81 @@ async fn http_request(
     let _ = line_read.read_line(&mut response).await;
     Ok(response)
 }
+async fn https_brute_forcer(
+    max: usize,
+    domain: &str,
+    file_clone: Arc<str>,
+    header_clone: &str,
+    met_clone: &str,
+    line_start: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let read = stdBufReader::new(File::open(&*file_clone).unwrap());
+    let mut lines = read.lines();
+    if line_start > 0 {
+        lines.nth(line_start - 1);
+    }
+    let mut root_cert_store = RootCertStore::empty();
+    root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = ClientConfig::builder()
+        .with_root_certificates(root_cert_store)
+        .with_no_client_auth();
+    let addr = domain.strip_suffix(":443").unwrap();
+    let connector = TlsConnector::from(Arc::new(config));
+    let dnsname: ServerName<'static> = ServerName::try_from(addr).unwrap().to_owned();
+    let stream = TcpStream::connect(domain).await?;
+    let mut stream = connector.connect(dnsname.clone(), stream).await?;
+    for (iterations, line) in lines.enumerate() {
+        if iterations >= max {
+            break;
+        }
+        let dir = line?;
+        let mut body = https_request(&mut stream, addr, &dir, met_clone, header_clone)
+            .await
+            .unwrap_or_default();
+        if !body.starts_with("HTTP") {
+            stream = tls_reconnect(domain, dnsname.clone(), &connector).await?;
+            body = https_request(&mut stream, addr, &dir, met_clone, header_clone)
+                .await
+                .unwrap_or_default()
+        }
+        let status = body.split(" ").nth(1).unwrap_or_default();
+        if status != "404" {
+            println!("found something! dir:{} status: {}", &dir, status);
+            stream = tls_reconnect(domain, dnsname.clone(), &connector).await?
+        }
+    }
+    Ok(())
+}
+async fn https_request(
+    stream: &mut TlsStream<TcpStream>,
+    addr: &str,
+    dir: &str,
+    method: &str,
+    header: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut request = Vec::with_capacity(255);
+    request.extend_from_slice(method.as_bytes());
+    request.extend_from_slice(b" /");
+    request.extend_from_slice(dir.replace(' ', "%20").as_bytes());
+    request.extend_from_slice(b" HTTP/1.1 \r\nHost: ");
+    request.extend_from_slice(addr.as_bytes());
+    request.extend_from_slice(b"\r\n");
+    request.extend_from_slice(header.as_bytes());
+    request.extend_from_slice(b"\r\n\r\n");
+    let _ = stream.write_all(&request).await;
+    let mut resp = String::new();
+    let _ = stream.read_line(&mut resp).await;
+    Ok(resp)
+}
+async fn tls_reconnect(
+    domain: &str,
+    dnsname: ServerName<'static>,
+    connector: &TlsConnector,
+) -> Result<TlsStream<TcpStream>, Box<dyn std::error::Error>> {
+    let tcp_stream = TcpStream::connect(domain).await?;
+    let stream = connector.connect(dnsname, tcp_stream).await?;
+    Ok(stream)
+}
 fn parse_flags() -> (String, String, Vec<String>, usize, String, String) {
     let args: Vec<String> = env::args().collect();
     let mut a = 0;
@@ -173,12 +259,12 @@ fn parse_flags() -> (String, String, Vec<String>, usize, String, String) {
     for arg in args.iter() {
         match a {
             1 => {
-                header = String::from(arg);
+                header = arg.parse().unwrap();
                 a = 0;
                 continue;
             }
             2 => {
-                method = String::from(arg);
+                method = arg.parse().unwrap();
                 a = 0;
                 continue;
             }
@@ -188,12 +274,12 @@ fn parse_flags() -> (String, String, Vec<String>, usize, String, String) {
                 continue;
             }
             4 => {
-                wordlist = String::from(arg);
+                wordlist = arg.parse().unwrap();
                 a = 0;
                 continue;
             }
             5 => {
-                url = String::from(arg);
+                url = arg.parse().unwrap();
                 a = 0;
                 continue;
             }

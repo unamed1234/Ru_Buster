@@ -4,4 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+tokio-rustls = "0.26.4"
+webpki-roots = "1.0.7"
 tokio = { version = "1.50.0", features = ["full"] }
+rustls-pki-types = "1.14.0"
