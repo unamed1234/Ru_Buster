@@ -13,12 +13,12 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 #[tokio::main]
 
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (method, header, args, thread_num, wordlist, domain) = parse_flags();
+    let http_args = parse_flags();
     //usage help
-    if wordlist.is_empty() || domain.is_empty() {
+    if http_args.wordlist.is_empty() || http_args.domain.is_empty() {
         println!(
             "usage is: {} --url example.com -w wordlist.txt -m POST -H \"Authorization: 123sjdoajdoa102skda\"",
-            &args[0]
+            &http_args.args[0]
         );
         println!("flags:");
         println!("-H or --header for custom header in \"Header: Value\" format");
@@ -27,23 +27,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("-w or --wordlist path to your wordlist");
         return Ok(());
     }
-    let filename: Arc<str> = Arc::from(wordlist.as_str());
-    let met = Arc::new(method);
-    let head = Arc::new(header);
-    let rightdom = if domain.starts_with("https://") {
-        Arc::new(format!("{}:443", domain.strip_prefix("https://").unwrap()))
-    } else if domain.starts_with("http://") {
-        Arc::new(format!("{}:80", domain.strip_prefix("http://").unwrap()))
+    let filename: Arc<str> = Arc::from(http_args.wordlist.as_str());
+    let met = Arc::new(http_args.method);
+    let head = Arc::new(http_args.header);
+    let rightdom = if http_args.domain.starts_with("https://") {
+        Arc::new(format!(
+            "{}:443",
+            http_args.domain.strip_prefix("https://").unwrap()
+        ))
+    } else if http_args.domain.starts_with("http://") {
+        Arc::new(format!(
+            "{}:80",
+            http_args.domain.strip_prefix("http://").unwrap()
+        ))
     } else {
         Err("make sure your domain starts with a protocol (https:// or http://)")?
     };
-    let dom = Arc::new(domain);
-    let reader = stdBufReader::new(File::open(&wordlist)?);
+    let dom = Arc::new(http_args.domain);
+    let reader = stdBufReader::new(File::open(&http_args.wordlist)?);
     let num_of_lines = reader.lines().count();
-    let chunk = num_of_lines / thread_num;
-    let remainder = num_of_lines % thread_num;
+    let chunk = num_of_lines / http_args.thread_num;
+    let remainder = num_of_lines % http_args.thread_num;
     let mut handles = Vec::new();
-    for i in 0..thread_num {
+    for i in 0..http_args.thread_num {
         let file_clone = Arc::clone(&filename);
         let met_clone = Arc::clone(&met);
         let header_clone = Arc::clone(&head);
@@ -54,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if domain_clone.starts_with("http://") {
             handles.push(task::spawn(async move {
                 let line_start = chunk * i;
-                let thread_chunk = if i == thread_num - 1 {
+                let thread_chunk = if i == http_args.thread_num - 1 {
                     chunk + remainder
                 } else {
                     chunk
@@ -77,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if domain_clone.starts_with("https://") {
             handles.push(task::spawn(async move {
                 let line_start = chunk * i;
-                let thread_chunk = if i == thread_num - 1 {
+                let thread_chunk = if i == http_args.thread_num - 1 {
                     chunk + remainder
                 } else {
                     chunk
@@ -191,7 +197,9 @@ async fn https_brute_forcer(
     let config = ClientConfig::builder()
         .with_root_certificates(root_cert_store)
         .with_no_client_auth();
-    let addr = domain.strip_suffix(":443").unwrap();
+    let addr = domain
+        .strip_suffix(":443")
+        .expect("something went very wrong hardcoded data doesn't exist?");
     let connector = TlsConnector::from(Arc::new(config));
     let dnsname: ServerName<'static> = ServerName::try_from(addr).unwrap().to_owned();
     let stream = TcpStream::connect(domain).await?;
@@ -248,14 +256,14 @@ async fn tls_reconnect(
     let stream = connector.connect(dnsname, tcp_stream).await?;
     Ok(stream)
 }
-fn parse_flags() -> (String, String, Vec<String>, usize, String, String) {
+fn parse_flags() -> HttpArgs {
     let args: Vec<String> = env::args().collect();
     let mut a = 0;
-    let mut method = String::from("GET");
+    let mut method = String::from("get");
     let mut header = String::from("");
     let mut thread_num: usize = 10;
     let mut wordlist = String::from("");
-    let mut url = String::from("");
+    let mut domain = String::from("");
     for arg in args.iter() {
         match a {
             1 => {
@@ -279,7 +287,7 @@ fn parse_flags() -> (String, String, Vec<String>, usize, String, String) {
                 continue;
             }
             5 => {
-                url = arg.parse().unwrap();
+                domain = arg.parse().unwrap();
                 a = 0;
                 continue;
             }
@@ -294,5 +302,20 @@ fn parse_flags() -> (String, String, Vec<String>, usize, String, String) {
             _ => a = 0,
         }
     }
-    (method, header, args, thread_num, wordlist, url)
+    HttpArgs {
+        method,
+        header,
+        wordlist,
+        domain,
+        args,
+        thread_num,
+    }
+}
+struct HttpArgs {
+    method: String,
+    header: String,
+    wordlist: String,
+    domain: String,
+    args: Vec<String>,
+    thread_num: usize,
 }
