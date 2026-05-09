@@ -259,7 +259,7 @@ async fn tls_reconnect(
 fn parse_flags() -> HttpArgs {
     let args: Vec<String> = env::args().collect();
     let mut a = 0;
-    let mut method = String::from("get");
+    let mut method = String::from("GET");
     let mut header = String::from("");
     let mut thread_num: usize = 10;
     let mut wordlist = String::from("");
@@ -267,27 +267,27 @@ fn parse_flags() -> HttpArgs {
     for arg in args.iter() {
         match a {
             1 => {
-                header = arg.parse().unwrap();
+                header = arg.parse().expect("header is malformed");
                 a = 0;
                 continue;
             }
             2 => {
-                method = arg.parse().unwrap();
+                method = arg.parse().expect("method is wrong or malformed");
                 a = 0;
                 continue;
             }
             3 => {
-                thread_num = arg.parse().unwrap();
+                thread_num = arg.parse().expect("threads is wrong or malformed");
                 a = 0;
                 continue;
             }
             4 => {
-                wordlist = arg.parse().unwrap();
+                wordlist = arg.parse().expect("wordlist is wrong or malformed");
                 a = 0;
                 continue;
             }
             5 => {
-                domain = arg.parse().unwrap();
+                domain = arg.parse().expect("domain is wrong or malformed");
                 a = 0;
                 continue;
             }
