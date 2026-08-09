@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if http_args.wordlist.is_empty() || http_args.domain.is_empty() {
         println!(
             "usage is: {} --url example.com -w wordlist.txt -m POST -H \"Authorization: 123sjdoajdoa102skda\"",
-            &http_args.args[0]
+            http_args.args[0]
         );
         println!("flags:");
         println!("-H or --header for custom header in \"Header: Value\" format");
@@ -121,33 +121,28 @@ async fn http_brute_forcer(
         lines.nth(line_start - 1);
     }
     for (iterations, line) in lines.enumerate() {
+        let line = match line {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("err {e}");
+                continue;
+            }
+        };
         if iterations >= max {
             break;
         }
-        let mut body = http_request(
-            domain,
-            line.as_ref().unwrap_or(&String::from("")),
-            &mut stream,
-            header_clone,
-            met_clone,
-        )
-        .await
-        .unwrap_or_default();
-        if !body.starts_with("HTTP") {
-            stream = TcpStream::connect(&domain).await?;
-            body = http_request(
-                domain,
-                line.as_ref().unwrap_or(&String::from("")),
-                &mut stream,
-                header_clone,
-                met_clone,
-            )
+        let mut body = http_request(domain, &line, &mut stream, header_clone, met_clone)
             .await
             .unwrap_or_default();
+        if !body.starts_with("HTTP") {
+            stream = TcpStream::connect(&domain).await?;
+            body = http_request(domain, &line, &mut stream, header_clone, met_clone)
+                .await
+                .unwrap_or_default();
         }
-        let status = body.split(" ").nth(1).unwrap_or_default();
+        let status = body.split(' ').nth(1).unwrap_or_default();
         if status != "404" {
-            println!("found something! dir:{} status: {}", line.unwrap(), status);
+            println!("found something! dir:{} status: {}", line, status);
             // fix next request being body to this one since we're reusing stream
             stream = TcpStream::connect(&domain).await?;
         }
@@ -168,15 +163,15 @@ async fn http_request(
     // User-Agent: Ru_dirbuster/0.0.2 {header}\r\n\r\n")
     request.extend_from_slice(method.as_bytes());
     request.extend_from_slice(b" /");
-    request.extend_from_slice(dir.replace(" ", "%20").as_bytes());
+    request.extend_from_slice(dir.replace(' ', "%20").as_bytes());
     request.extend_from_slice(b" HTTP/1.1\r\nHOST: ");
     request.extend_from_slice(url.as_bytes());
     request.extend_from_slice(b"\r\nUser-Agent: Ru_dirbuster/0.1.0\r\n");
     request.extend_from_slice(header.as_bytes());
     request.extend_from_slice(b"\r\n\r\n");
-    let _ = stream.write_all(&request).await;
+    stream.write_all(&request).await?;
     let mut line_read = BufReader::new(stream);
-    let _ = line_read.read_line(&mut response).await;
+    line_read.read_line(&mut response).await?;
     Ok(response)
 }
 async fn https_brute_forcer(
@@ -213,15 +208,15 @@ async fn https_brute_forcer(
             .await
             .unwrap_or_default();
         if !body.starts_with("HTTP") {
-            stream = tls_reconnect(domain, dnsname.clone(), &connector).await?;
+            stream = tls_reconnect(domain, &dnsname, &connector).await?;
             body = https_request(&mut stream, addr, &dir, met_clone, header_clone)
                 .await
                 .unwrap_or_default()
         }
-        let status = body.split(" ").nth(1).unwrap_or_default();
+        let status = body.split(' ').nth(1).unwrap_or_default();
         if status != "404" {
-            println!("found something! dir:{} status: {}", &dir, status);
-            stream = tls_reconnect(domain, dnsname.clone(), &connector).await?
+            println!("found something! dir:{} status: {}", dir, status);
+            stream = tls_reconnect(domain, &dnsname, &connector).await?
         }
     }
     Ok(())
@@ -249,22 +244,22 @@ async fn https_request(
 }
 async fn tls_reconnect(
     domain: &str,
-    dnsname: ServerName<'static>,
+    dnsname: &ServerName<'static>,
     connector: &TlsConnector,
 ) -> Result<TlsStream<TcpStream>, Box<dyn std::error::Error>> {
     let tcp_stream = TcpStream::connect(domain).await?;
-    let stream = connector.connect(dnsname, tcp_stream).await?;
+    let stream = connector.connect(dnsname.to_owned(), tcp_stream).await?;
     Ok(stream)
 }
 fn parse_flags() -> HttpArgs {
     let args: Vec<String> = env::args().collect();
     let mut a = 0;
     let mut method = String::from("GET");
-    let mut header = String::from("");
+    let mut header = String::new();
     let mut thread_num: usize = 10;
-    let mut wordlist = String::from("");
-    let mut domain = String::from("");
-    for arg in args.iter() {
+    let mut wordlist = String::new();
+    let mut domain = String::new();
+    for arg in &args {
         match a {
             1 => {
                 header = arg.parse().expect("header is malformed");
